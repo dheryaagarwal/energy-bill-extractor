@@ -2,191 +2,186 @@ import streamlit as st
 import fitz  # PyMuPDF
 import re
 
-def parse_month(lines):
+def extract_fields(pdf_text):
     """
-    Extract 'Month' from a line containing 'Bill month'
-    or any pattern like 'May-2024' or 'MAR-2025'
+    Extract these fields from a PDF's text:
+      1) Month
+      2) Units Consumed
+      3) Load Sanctioned
+      4) Contract Demand
+      5) Maximum Demand
     """
-    # 1) Check for "Bill month" lines
-    for line in lines:
-        lower_line = line.lower()
-        if "bill month" in lower_line:
-            # e.g., "Bill month : May-2024"
-            # We'll match something like "XXXX-YYYY"
-            m = re.search(r'([A-Za-z]{3,}-\d{4})', line)
-            if m:
-                return m.group(1).strip()
 
-    # 2) Fallback: any line that has something like "May-2024" or "MAR-2025"
-    for line in lines:
-        m = re.search(r'([A-Za-z]{3,}-\d{4})', line)
-        if m:
-            return m.group(1).strip()
+    # Split text into a list of stripped, non-empty lines
+    raw_lines = [ln.strip() for ln in pdf_text.splitlines() if ln.strip()]
 
-    return "Not Found"
+    # -------------------------------------------------
+    # OPTIONAL: Uncomment for debugging the raw lines:
+    # -------------------------------------------------
+    # st.write("DEBUG: Raw lines from PDF:")
+    # for i, ln in enumerate(raw_lines):
+    #     st.write(f"[{i}] {ln}")
+    # st.write("-----")
 
-
-def parse_units_consumed(lines):
-    """
-    Extract 'Units Consumed' from possible lines:
-      - "Units consumed"
-      - "Net Units Supplied"
-      - "Total Units"
-    """
-    # 1) Check lines for "units consumed"
-    for line in lines:
-        if "units consumed" in line.lower():
-            # e.g., "4,01803-Apr-2025 Units consumedBill Date"
-            m = re.search(r'(\d{1,3}(?:,\d{3})+|\d+)', line)
-            if m:
-                return m.group(1).replace(",", "")
-
-    # 2) Check lines for "net units supplied"
-    for line in lines:
-        if "net units supplied" in line.lower():
-            # e.g., "Net Units Supplied 28261.00000"
-            m = re.search(r'(\d+(?:\.\d+)?)', line)
-            if m:
-                # e.g., "28261.00000" -> "28261"
-                return m.group(1).replace(".00000", "").replace(",", "")
-
-    # 3) Check lines for "total units"
-    for line in lines:
-        if "total units" in line.lower():
-            # e.g., "Total Units 28261.00000"
-            m = re.search(r'(\d+(?:\.\d+)?)', line)
-            if m:
-                return m.group(1).replace(".00000", "").replace(",", "")
-
-    return "Not Found"
-
-
-def parse_load_sanctioned(lines):
-    """
-    Extract 'Load Sanctioned' if there's a line containing that phrase.
-    If the new PDF only mentions 'Cont. Demand', we skip or fallback to Not Found.
-    """
-    for line in lines:
-        lower_line = line.lower()
-        if "load sanctioned" in lower_line:
-            # e.g., "Load Sanctioned 35.0 KW"
-            m = re.search(r'(\d+(?:\.\d+)?)\s*(kw|kva)?', line, re.IGNORECASE)
-            if m:
-                return m.group(1)
-    return "Not Found"
-
-
-def parse_contract_demand(lines):
-    """
-    Extract 'Contract Demand' from either 'Contract Demand' or 'Cont. Demand' lines.
-    e.g., "Cont. Demand 120 KVA"
-    """
-    for line in lines:
-        lower_line = line.lower()
-        if "cont. demand" in lower_line or "contract demand" in lower_line:
-            m = re.search(r'(\d+(?:\.\d+)?)\s*(kw|kva)?', line, re.IGNORECASE)
-            if m:
-                return m.group(1)
-    return "Not Found"
-
-
-def parse_max_demand(lines):
-    """
-    Extract 'Maximum Demand' from lines containing:
-      - "Maximum Demand"
-      - "Max Demand"
-      - "Net Max Demand"
-    e.g., "Net Max Demand 108.00000"
-    """
-    # 1) Check for lines with "Net Max Demand"
-    for line in lines:
-        if "net max demand" in line.lower():
-            # e.g., "Net Max Demand 108.00000"
-            m = re.search(r'net\s+max\s+demand\s+(\d+(?:\.\d+)?)', line.lower())
-            if m:
-                return m.group(1).replace(".00000", "")
-            # If not in that exact format, do a more flexible pattern
-            # capturing the first float after "Net Max Demand"
-            m2 = re.search(r'net\s+max\s+demand\s+(\d+(?:\.\d+))', line.lower())
-            if m2:
-                return m2.group(1)
-            # Or any float on that same line
-            m3 = re.search(r'(\d+\.\d+)', line)
-            if m3:
-                return m3.group(1)
-
-    # 2) Check for "Maximum Demand" or "Max Demand"
-    for line in lines:
-        if "maximum demand" in line.lower() or "max demand" in line.lower():
-            m_md = re.search(r'(?:maximum|max)\s+demand[:\s-]*([\d\.]+)', line, re.IGNORECASE)
-            if m_md:
-                return m_md.group(1).replace(".00000", "")
-            # fallback to any float in that line
-            m2 = re.search(r'(\d+\.\d+)', line)
-            if m2:
-                return m2.group(1)
-
-    # 3) If still not found, maybe there's a line that's just a decimal
-    for line in lines:
-        if re.fullmatch(r'\d+\.\d+', line):
-            return line.strip()
-
-    return "Not Found"
-
-
-def extract_fields(raw_text):
-    """
-    Returns a dictionary with:
-      - Month
-      - Units Consumed
-      - Load Sanctioned
-      - Contract Demand
-      - Maximum Demand
-    """
-    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
-
-    results = {
-        "Month": parse_month(lines),
-        "Units Consumed": parse_units_consumed(lines),
-        "Load Sanctioned": parse_load_sanctioned(lines),
-        "Contract Demand": parse_contract_demand(lines),
-        "Maximum Demand": parse_max_demand(lines)
+    # Prepare dictionary with default "Not Found" values
+    fields = {
+        "Month": "Not Found",
+        "Units Consumed": "Not Found",
+        "Load Sanctioned": "Not Found",
+        "Contract Demand": "Not Found",
+        "Maximum Demand": "Not Found",
     }
-    return results
 
+    # Helper: get line or the next non-empty line
+    def get_line_or_next(i):
+        """
+        Return the content of line i if it exists;
+        otherwise check subsequent lines until a non-empty one is found;
+        if none found, return "".
+        """
+        if i < len(raw_lines):
+            # current line
+            line = raw_lines[i]
+            if line.strip():
+                return line
+        # else go forward
+        j = i + 1
+        while j < len(raw_lines):
+            if raw_lines[j].strip():
+                return raw_lines[j]
+            j += 1
+        return ""
 
-# -----------------------------
+    # Let's loop line-by-line and check for keywords
+    for i, line in enumerate(raw_lines):
+        lower_line = line.lower()
+
+        # -----------------------
+        # 1) Month
+        # -----------------------
+        # If "month" is on this line, let's parse a pattern like MAR-2025 or May-2024
+        if "month" in lower_line and fields["Month"] == "Not Found":
+            # Try same line first
+            match = re.search(r'([A-Za-z]{3,}-\d{4})', line)
+            if match:
+                fields["Month"] = match.group(1)
+            else:
+                # fallback: look on the next line
+                next_line = get_line_or_next(i + 1)
+                match2 = re.search(r'([A-Za-z]{3,}-\d{4})', next_line)
+                if match2:
+                    fields["Month"] = match2.group(1)
+
+        # -----------------------
+        # 2) Units Consumed
+        # -----------------------
+        # If "units consumed" is on this line
+        if "units consumed" in lower_line and fields["Units Consumed"] == "Not Found":
+            # Try same line for a number (commas allowed)
+            match = re.search(r'(\d[\d,\.]*)[^\n]*units\s*consumed', line, re.IGNORECASE)
+            if match:
+                fields["Units Consumed"] = match.group(1).replace(",", "").replace(".00000", "")
+            else:
+                # fallback: look for a numeric pattern on the next line
+                next_line = get_line_or_next(i + 1)
+                match2 = re.search(r'(\d[\d,\.]*)', next_line)
+                if match2:
+                    fields["Units Consumed"] = match2.group(1).replace(",", "").replace(".00000", "")
+
+        # Another check for "total units" or "net units supplied"
+        # (in case "units consumed" wasn't found in the new PDF)
+        if any(kw in lower_line for kw in ["total units", "net units supplied"]) and fields["Units Consumed"] == "Not Found":
+            # e.g., "Total Units 28261.00000"
+            match = re.search(r'(\d[\d,\.]+)', line)
+            if match:
+                fields["Units Consumed"] = match.group(1).replace(",", "").replace(".00000", "")
+
+        # -----------------------
+        # 3) Load Sanctioned
+        # -----------------------
+        # If "load sanctioned" on this line
+        if "load sanctioned" in lower_line and fields["Load Sanctioned"] == "Not Found":
+            # Look for number in same or next line
+            match = re.search(r'(\d+(?:\.\d+)?)[^\n]*(kw|kva)?', line, re.IGNORECASE)
+            if match:
+                fields["Load Sanctioned"] = match.group(1)
+            else:
+                # fallback: next line
+                next_line = get_line_or_next(i + 1)
+                match2 = re.search(r'(\d+(?:\.\d+)?)[^\n]*(kw|kva)?', next_line, re.IGNORECASE)
+                if match2:
+                    fields["Load Sanctioned"] = match2.group(1)
+
+        # -----------------------
+        # 4) Contract Demand
+        # -----------------------
+        # If "contract demand" or "cont. demand" on this line
+        if ("contract demand" in lower_line or "cont. demand" in lower_line) and fields["Contract Demand"] == "Not Found":
+            match = re.search(r'(\d+(?:\.\d+)?)[^\n]*(kw|kva)?', line, re.IGNORECASE)
+            if match:
+                fields["Contract Demand"] = match.group(1)
+            else:
+                # fallback: next line
+                next_line = get_line_or_next(i + 1)
+                match2 = re.search(r'(\d+(?:\.\d+)?)[^\n]*(kw|kva)?', next_line, re.IGNORECASE)
+                if match2:
+                    fields["Contract Demand"] = match2.group(1)
+
+        # -----------------------
+        # 5) Maximum Demand
+        # -----------------------
+        # If "maximum demand", "max demand", or "net max demand" on this line
+        if any(kw in lower_line for kw in ["maximum demand", "max demand", "net max demand"]) and fields["Maximum Demand"] == "Not Found":
+            # look for numeric on same line
+            match = re.search(r'(\d+(?:\.\d+))', line)
+            if match:
+                fields["Maximum Demand"] = match.group(1).replace(".00000", "")
+            else:
+                # fallback: next line
+                next_line = get_line_or_next(i + 1)
+                match2 = re.search(r'(\d+(?:\.\d+))', next_line)
+                if match2:
+                    fields["Maximum Demand"] = match2.group(1).replace(".00000", "")
+
+    return fields
+
+# -----------------------------------------------------------------
 # Streamlit App
-# -----------------------------
+# -----------------------------------------------------------------
 st.set_page_config(page_title="Energy Bill Extractor", layout="centered")
-st.title("🔍 Energy Bill PDF Extractor (Multi-format)")
+st.title("Robust Energy Bill PDF Extractor")
 
 st.write("""
 Upload one or more electricity bill PDFs to extract:
-
 1. **Month**  
 2. **Units Consumed**  
 3. **Load Sanctioned**  
 4. **Contract Demand**  
 5. **Maximum Demand**  
+
+This version does:
+- **Line-by-line** scanning
+- **Same-line or next-line** searches for each field
+- More flexible regex to handle merged text (e.g. "4,01803-Apr-2025Units consumed")
+- Works better across both old & new HT format PDFs
 """)
 
-uploaded_files = st.file_uploader("Upload PDF bills", type="pdf", accept_multiple_files=True)
+uploaded_files = st.file_uploader("Upload your PDF bills", type="pdf", accept_multiple_files=True)
 
 if uploaded_files:
-    for uploaded_file in uploaded_files:
-        with st.spinner(f"Processing {uploaded_file.name}..."):
-            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            raw_text = ""
+    for file in uploaded_files:
+        with st.spinner(f"Processing {file.name}..."):
+            doc = fitz.open(stream=file.read(), filetype="pdf")
+            text = ""
             for page in doc:
-                raw_text += page.get_text()
+                text += page.get_text()
             doc.close()
 
-            results = extract_fields(raw_text)
+            results = extract_fields(text)
 
-        with st.expander(f"Results for {uploaded_file.name}"):
-            st.markdown(f"**Month:** {results['Month']}")
-            st.markdown(f"**Units Consumed:** {results['Units Consumed']}")
-            st.markdown(f"**Load Sanctioned:** {results['Load Sanctioned']}")
-            st.markdown(f"**Contract Demand:** {results['Contract Demand']}")
-            st.markdown(f"**Maximum Demand:** {results['Maximum Demand']}")
+        with st.expander(f"Results for {file.name}"):
+            st.markdown(f"**Month**: {results['Month']}")
+            st.markdown(f"**Units Consumed**: {results['Units Consumed']}")
+            st.markdown(f"**Load Sanctioned**: {results['Load Sanctioned']}")
+            st.markdown(f"**Contract Demand**: {results['Contract Demand']}")
+            st.markdown(f"**Maximum Demand**: {results['Maximum Demand']}")
