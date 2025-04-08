@@ -2,24 +2,42 @@ import streamlit as st
 import fitz  # PyMuPDF
 import re
 
-# -----------------------------------------------------
-# 1) HELPERS: line-based searching
-# -----------------------------------------------------
+# --- Helper Functions ---
 
 def get_first_numeric(line: str) -> str:
     """
-    Return the first integer/float in 'line', ignoring commas.
-    If none found, return "".
+    Attempt to get a numeric value from a line.
+    If a comma is present and the number appears to be thousand‐formatted,
+    we try to use the portion before any trailing extra digits.
+    Otherwise, we return the first numeric chunk.
     """
-    line = line.replace(",", "")  # remove commas
+    # Try to find a number that is NOT immediately followed by more digits after a comma
+    # (This pattern helps avoid matching just the "4" from "4,01803")
+    match = re.search(r'(\d{1,3},\d{3})(?!\d)', line)
+    if match:
+        return match.group(1).replace(",", "")
+    # Fallback: return the first numeric sequence
     match = re.search(r'(\d+(?:\.\d+)?)', line)
-    return match.group(1) if match else ""
+    if match:
+        return match.group(1)
+    return ""
+
+def parse_units_consumed_custom(text_line: str) -> str:
+    """
+    Specifically extract Units Consumed from a line that may be merged with a date.
+    Remove any date pattern (e.g. "03-Apr-2025") first,
+    then search for a 3- to 6-digit number.
+    """
+    # Remove potential date strings like "03-Apr-2025"
+    cleaned = re.sub(r'\d{1,2}-[A-Za-z]{3}-\d{4}', '', text_line)
+    # Now search for a group of 3 to 6 digits
+    match = re.search(r'\b(\d{3,6})\b', cleaned)
+    if match:
+        return match.group(1)
+    return ""
 
 def next_non_empty_line(lines, i):
-    """
-    Return the next non-empty line after index i,
-    or "" if none is found.
-    """
+    """Return the next non-empty line after index i, or an empty string if none."""
     j = i + 1
     while j < len(lines):
         if lines[j].strip():
@@ -27,11 +45,13 @@ def next_non_empty_line(lines, i):
         j += 1
     return ""
 
+# --- Line-by-Line Parsing ---
+
 def parse_line_by_line(lines):
     """
-    Parse the PDF by scanning lines in order, looking
-    for target labels & numeric data on the same or next line.
-    Returns a dict with partial or full results.
+    Go through the lines one by one, checking for our key labels.
+    If a value isn’t on the same line as the label, check the very next non-empty line.
+    Returns a dictionary with partial results.
     """
     results = {
         "Month": None,
@@ -44,45 +64,37 @@ def parse_line_by_line(lines):
     for i, line in enumerate(lines):
         lower_line = line.lower()
 
-        # Month
+        # --- Month ---
         if "month" in lower_line and results["Month"] is None:
-            # same line
-            match = re.search(r'([A-Za-z]{3,}-\d{4})', line)
-            if match:
-                results["Month"] = match.group(1)
+            m = re.search(r'([A-Za-z]{3,}-\d{4})', line)
+            if m:
+                results["Month"] = m.group(1)
             else:
-                # next line
                 nxt = next_non_empty_line(lines, i)
                 m2 = re.search(r'([A-Za-z]{3,}-\d{4})', nxt)
                 if m2:
                     results["Month"] = m2.group(1)
 
-        # Units Consumed
-        # Check if line has "units consumed"
+        # --- Units Consumed ---
         if "units consumed" in lower_line and results["Units Consumed"] is None:
-            # Merge current + next line to handle jammed text
+            # Merge current line with the next non-empty line to capture jammed text
             merged = line + " " + next_non_empty_line(lines, i)
-            m_units = re.search(r'(\d[\d\.]*)[^\n]*units\s*consumed', merged, re.IGNORECASE)
-            if m_units:
-                val = m_units.group(1).replace(".00000", "")
+            val = parse_units_consumed_custom(merged)
+            if val:
                 results["Units Consumed"] = val
             else:
-                # fallback numeric on next line
-                maybe = get_first_numeric(next_non_empty_line(lines, i))
-                if maybe:
-                    results["Units Consumed"] = maybe
+                nxt = next_non_empty_line(lines, i)
+                val2 = parse_units_consumed_custom(nxt)
+                if val2:
+                    results["Units Consumed"] = val2
 
-        # Also check lines with "total units" or "net units supplied"
-        if any(k in lower_line for k in ["total units", "net units supplied"]) and results["Units Consumed"] is None:
-            # numeric on same or next line
-            val = get_first_numeric(line)
-            if not val:
-                val = get_first_numeric(next_non_empty_line(lines, i))
-            if val:
-                val = val.replace(".00000", "")
-                results["Units Consumed"] = val
+        # Also look for fallback labels like "total units" or "net units supplied"
+        if any(keyword in lower_line for keyword in ["total units", "net units supplied"]) and results["Units Consumed"] is None:
+            m = re.search(r'\b(\d{3,6})\b', line)
+            if m:
+                results["Units Consumed"] = m.group(1)
 
-        # Load Sanctioned
+        # --- Load Sanctioned ---
         if "load sanctioned" in lower_line and results["Load Sanctioned"] is None:
             val = get_first_numeric(line)
             if not val:
@@ -90,7 +102,7 @@ def parse_line_by_line(lines):
             if val:
                 results["Load Sanctioned"] = val
 
-        # Contract Demand
+        # --- Contract Demand ---
         if ("contract demand" in lower_line or "cont. demand" in lower_line) and results["Contract Demand"] is None:
             val = get_first_numeric(line)
             if not val:
@@ -98,30 +110,24 @@ def parse_line_by_line(lines):
             if val:
                 results["Contract Demand"] = val
 
-        # Maximum Demand
+        # --- Maximum Demand ---
         if any(x in lower_line for x in ["maximum demand", "max demand", "net max demand"]) and results["Maximum Demand"] is None:
             val = get_first_numeric(line)
             if not val:
                 val = get_first_numeric(next_non_empty_line(lines, i))
             if val:
-                results["Maximum Demand"] = val.replace(".00000", "")
+                results["Maximum Demand"] = val
 
     return results
 
-# -----------------------------------------------------
-# 2) HELPERS: text-wide fallback searching
-# -----------------------------------------------------
+# --- Fallback: Text-Wide Regex ---
 
 def fallback_in_whole_text(text):
     """
-    As a fallback, we do broad regex searches on the entire text
-    to find any missed fields. We'll anchor around known words
-    or patterns, capturing a numeric near them.
+    If the line-by-line method fails for any field, run a broad regex search
+    on the entire text for that field.
     """
-    # Clean up text for easier searching
-    t = text.replace(",", "")  
-
-    # Prepare a dictionary for fallback
+    t = text.replace(",", "")  # remove commas for simplicity
     fallback_results = {
         "Month": None,
         "Units Consumed": None,
@@ -130,94 +136,65 @@ def fallback_in_whole_text(text):
         "Maximum Demand": None,
     }
 
-    # Month fallback: look for "Month" or direct pattern like "May-2024"
-    # We also exclude short patterns like 19-Apr-2025 (common for dates).
-    # But let's do a direct approach: "([A-Za-z]{3,}-\d{4})" anywhere in text.
     m_month = re.search(r'([A-Za-z]{3,}-\d{4})', t)
     if m_month:
         fallback_results["Month"] = m_month.group(1)
 
-    # Units consumed fallback: look for "units consumed" plus a numeric near it
-    # For example: r"(\d[\d\.]+)\s*units\s*consumed" or the reverse
-    m_units = re.search(r'(\d[\d\.]+)\s*(?:units\s*consumed)', t, re.IGNORECASE)
+    m_units = re.search(r'(\d{3,6})\s*(?:units\s*consumed)', t, re.IGNORECASE)
     if m_units:
-        fallback_results["Units Consumed"] = m_units.group(1).replace(".00000", "")
-
-    # total/net units
+        fallback_results["Units Consumed"] = m_units.group(1)
     if not fallback_results["Units Consumed"]:
-        m_u2 = re.search(r'(?:total units|net units supplied)\s*(\d[\d\.]+)', t, re.IGNORECASE)
+        m_u2 = re.search(r'(?:total units|net units supplied)\s*(\d{3,6})', t, re.IGNORECASE)
         if m_u2:
-            fallback_results["Units Consumed"] = m_u2.group(1).replace(".00000", "")
+            fallback_results["Units Consumed"] = m_u2.group(1)
 
-    # Load Sanctioned fallback
     m_ls = re.search(r'load\s*sanctioned\s*(\d+(?:\.\d+)?)', t, re.IGNORECASE)
     if m_ls:
         fallback_results["Load Sanctioned"] = m_ls.group(1)
 
-    # Contract Demand fallback
     m_cd = re.search(r'(?:contract demand|cont\. demand)\s*(\d+(?:\.\d+)?)', t, re.IGNORECASE)
     if m_cd:
         fallback_results["Contract Demand"] = m_cd.group(1)
 
-    # Maximum Demand fallback
     m_md = re.search(r'(?:maximum demand|max demand|net max demand)\s*(\d+(?:\.\d+)?)', t, re.IGNORECASE)
     if m_md:
-        fallback_results["Maximum Demand"] = m_md.group(1).replace(".00000", "")
+        fallback_results["Maximum Demand"] = m_md.group(1)
 
     return fallback_results
 
-# -----------------------------------------------------
-# 3) Main Extraction: Combine both approaches
-# -----------------------------------------------------
+# --- Main Extraction Function: Combine Both Approaches ---
+
 def extract_fields(pdf_text):
     lines = [ln.strip() for ln in pdf_text.splitlines() if ln.strip()]
-
-    # 1) line-by-line approach
     line_results = parse_line_by_line(lines)
-
-    # 2) text-wide fallback approach
     fallback_results = fallback_in_whole_text(pdf_text)
-
-    # Combine them: if line_results found nothing for a field,
-    # use fallback_results. If fallback also has none, remain "Not Found".
     final = {}
     for field in ["Month", "Units Consumed", "Load Sanctioned", "Contract Demand", "Maximum Demand"]:
-        val_line = line_results[field]
-        val_fb   = fallback_results[field]
-        if val_line is not None:
+        val_line = line_results.get(field)
+        val_fb = fallback_results.get(field)
+        if val_line:
             final[field] = val_line
-        elif val_fb is not None:
+        elif val_fb:
             final[field] = val_fb
         else:
             final[field] = "Not Found"
-
-        # Convert None -> "Not Found"
-        if final[field] is None:
-            final[field] = "Not Found"
-
-        # Remove .00000 if it remains
         if isinstance(final[field], str):
             final[field] = final[field].replace(".00000", "")
-
     return final
 
-# -----------------------------------------------------
-# 4) STREAMLIT APP
-# -----------------------------------------------------
-st.set_page_config(page_title="Universal Bill Extractor", layout="centered")
-st.title("Universal Energy Bill PDF Extractor")
+# --- STREAMLIT APP INTERFACE ---
 
+st.set_page_config(page_title="Energy Bill Extractor", layout="centered")
+st.title("Energy Bill PDF Extractor (Final Robust Version)")
 st.write("""
-**Combines line-by-line parsing + text-wide fallback** to handle multiple PDF layouts.
-Target fields:
+This app extracts the following fields:
+- **Month** (e.g., MAR-2025)
+- **Units Consumed** (e.g., 4018)
+- **Load Sanctioned** (e.g., 35.0)
+- **Contract Demand** (e.g., 35.0)
+- **Maximum Demand** (e.g., 21.94)
 
-1. **Month** (e.g., MAR-2025 / May-2024)  
-2. **Units Consumed** (e.g., 4018 / 28261)  
-3. **Load Sanctioned** (e.g., 35.0)  
-4. **Contract Demand** (e.g., 35.0 / 120)  
-5. **Maximum Demand** (e.g., 21.94 / 108)  
-
-Upload both your original (`N3372042572.pdf`) and new HT (`1744108547035billDetails.pdf`) bills to test.
+It uses both a line-by-line method (with next-line lookup) and a fallback text-wide regex.
 """)
 
 uploaded_files = st.file_uploader("Upload PDF(s)", type="pdf", accept_multiple_files=True)
@@ -225,19 +202,15 @@ uploaded_files = st.file_uploader("Upload PDF(s)", type="pdf", accept_multiple_f
 if uploaded_files:
     for f in uploaded_files:
         with st.spinner(f"Processing {f.name}..."):
-            # Extract all text from PDF
             doc = fitz.open(stream=f.read(), filetype="pdf")
             raw_text = ""
             for page in doc:
                 raw_text += page.get_text()
             doc.close()
-
-            # Parse fields
             results = extract_fields(raw_text)
-
         with st.expander(f"Results for {f.name}"):
-            st.markdown(f"- **Month**: {results['Month']}")
-            st.markdown(f"- **Units Consumed**: {results['Units Consumed']}")
-            st.markdown(f"- **Load Sanctioned**: {results['Load Sanctioned']}")
-            st.markdown(f"- **Contract Demand**: {results['Contract Demand']}")
-            st.markdown(f"- **Maximum Demand**: {results['Maximum Demand']}")
+            st.markdown(f"**Month:** {results['Month']}")
+            st.markdown(f"**Units Consumed:** {results['Units Consumed']}")
+            st.markdown(f"**Load Sanctioned:** {results['Load Sanctioned']}")
+            st.markdown(f"**Contract Demand:** {results['Contract Demand']}")
+            st.markdown(f"**Maximum Demand:** {results['Maximum Demand']}")
