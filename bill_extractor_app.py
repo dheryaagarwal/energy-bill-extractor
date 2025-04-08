@@ -1,3 +1,6 @@
+import streamlit as st
+import fitz  # PyMuPDF
+
 def extract_fields(text):
     results = {
         "Month": "Not Found",
@@ -38,3 +41,24 @@ def extract_fields(text):
                 results["Maximum Demand (kW)"] = match.group(1).strip()
 
     return results
+
+# Streamlit App Setup
+st.set_page_config(page_title="Energy Bill Extractor", layout="centered")
+st.title("🔍 Energy Bill PDF Extractor")
+st.write("Upload one or more electricity bill PDFs to extract Month, Units Consumed, Load Details.")
+
+uploaded_files = st.file_uploader("Upload PDF bills", type="pdf", accept_multiple_files=True)
+
+if uploaded_files:
+    for uploaded_file in uploaded_files:
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        doc.close()
+
+        result = extract_fields(text)
+
+        with st.expander(f"📄 Details for {uploaded_file.name}"):
+            for k, v in result.items():
+                st.markdown(f"**{k}**: {v}")
