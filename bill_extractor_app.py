@@ -1,30 +1,42 @@
 import streamlit as st
 import fitz  # PyMuPDF
-import re
 
 def extract_fields(text):
-    # Flatten PDF text
-    clean_text = ' '.join(text.split())
-
-    # Regex based on layout seen in screenshots
-    month = re.search(r'Month\s*([A-Z]{3}-\d{4})', clean_text)
-    units = re.search(r'Units\s*consumed\s*([\d,]+)', clean_text)
-    sanctioned = re.search(r'Load\s*Sanctioned\s*(\d+\.?\d*)', clean_text)
-    contract = re.search(r'Contract\s*Demand\s*(\d+\.?\d*)', clean_text)
-    max_demand = re.search(r'Maximum\s*Demand\s*(\d+\.?\d*)', clean_text)
-
-    return {
-        "Month": month.group(1) if month else "Not Found",
-        "Units Consumed": units.group(1).replace(",", "") if units else "Not Found",
-        "Sanctioned Load (kW)": sanctioned.group(1) if sanctioned else "Not Found",
-        "Contract Demand (kW)": contract.group(1) if contract else "Not Found",
-        "Maximum Demand (kW)": max_demand.group(1) if max_demand else "Not Found"
+    results = {
+        "Month": "Not Found",
+        "Units Consumed": "Not Found",
+        "Sanctioned Load (kW)": "Not Found",
+        "Contract Demand (kW)": "Not Found",
+        "Maximum Demand (kW)": "Not Found"
     }
 
-# Streamlit UI
+    # Read line by line for accurate matching
+    lines = text.split('\n')
+
+    for i, line in enumerate(lines):
+        line_clean = line.strip().lower()
+
+        if "month" in line_clean and results["Month"] == "Not Found":
+            results["Month"] = lines[i+1].strip()
+
+        if "units consumed" in line_clean and results["Units Consumed"] == "Not Found":
+            results["Units Consumed"] = lines[i+1].strip().replace(",", "")
+
+        if "load sanctioned" in line_clean and results["Sanctioned Load (kW)"] == "Not Found":
+            results["Sanctioned Load (kW)"] = lines[i+1].strip().split()[0]
+
+        if "contract demand" in line_clean and results["Contract Demand (kW)"] == "Not Found":
+            results["Contract Demand (kW)"] = lines[i+1].strip().split()[0]
+
+        if "maximum demand" in line_clean and results["Maximum Demand (kW)"] == "Not Found":
+            results["Maximum Demand (kW)"] = lines[i+1].strip().split()[0]
+
+    return results
+
+# Streamlit App Setup
 st.set_page_config(page_title="Energy Bill Extractor", layout="centered")
 st.title("🔍 Energy Bill PDF Extractor")
-st.write("Upload one or more electricity bill PDFs to extract: Month, Units Consumed, Sanctioned Load, Contract Demand, and Max Demand.")
+st.write("Upload one or more electricity bill PDFs to extract Month, Units Consumed, Load Details.")
 
 uploaded_files = st.file_uploader("Upload PDF bills", type="pdf", accept_multiple_files=True)
 
